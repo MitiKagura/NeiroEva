@@ -41,8 +41,8 @@
  5. Создайте файл .env
  > nano ~/NeiroEva/.env
  - и впишите
- >  BOT_TOKEN=ваш_токен_от_BotFather
-CREATOR_ID=ваш_telegram_id #Можно получить в боте @userinfobot
+ > BOT_TOKEN=ваш_токен_от_BotFather
+ > CREATOR_ID=ваш_telegram_id #Можно получить в боте @userinfobot
  6. Запускайте командой:
  - 'cd ~/NeiroEva && source ~/NeiroEva/evavenv/bin/activate && python.py'
     - Если у вас оболочка терминала fish:
