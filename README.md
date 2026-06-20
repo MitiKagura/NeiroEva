@@ -37,7 +37,7 @@
     - Скачает модель NablaThetaA5 (около 3 ГБ)
  
  4. Загрузите модель:
-    - qwen2.5-7b-instruct-q4_k_m.gguf [👉Скачать](https://huggingface.co/paultimothymooney/Qwen2.5-7B-Instruct-Q4_K_M-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf?download=true). Копируйте из загрузок в папку models
+    - qwen2.5-7b-instruct-q4_k_m.gguf [👉Скачать](https://huggingface.co/paultimothymooney/Qwen2.5-7B-Instruct-Q4_K_M-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf?download=true). Копируйте из загрузок в папку *models*
  5. Создайте файл .env
  `nano ~/NeiroEva/.env`
  - и впишите
