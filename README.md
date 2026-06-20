@@ -22,9 +22,9 @@
 ### **🦾Установка происходит только на Arch-подобных дистрибутивах:**
  1. Скачайте папку репозитория в корневой раздел командой:
  - 'git clone https://github.com/MitiKagura/NeiroEva'
- 1.1 Если хотите фотографии улучшенного качества, скачивате upscayl-bin через AUR. Например:
+ 2. Если хотите фотографии улучшенного качества, скачивате upscayl-bin через AUR. Например:
  - 'yay -S upscayl-bin'
- 2. Перейдите в папку репозитория и откройте *install.sh*. Можно так же командой:
+ 3. Перейдите в папку репозитория и откройте *install.sh*. Можно так же командой:
  - 'cd ~/NeiroEva && chmod +x install.sh && ./install.sh'
  - Установщик автоматически:
     
@@ -36,14 +36,14 @@
 
     - Скачает модель NablaThetaA5 (около 3 ГБ)
  
- 3. Загрузите модель:
+ 4. Загрузите модель:
     - qwen2.5-7b-instruct-q4_k_m.gguf [👉Скачать](https://huggingface.co/paultimothymooney/Qwen2.5-7B-Instruct-Q4_K_M-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf?download=true). Копируйте из загрузок в папку models
- 4. Создайте файл .env
+ 5. Создайте файл .env
  'nano ~/NeiroEva/.env'
  и впишите
  'BOT_TOKEN=ваш_токен_от_BotFather
 CREATOR_ID=ваш_telegram_id #Можно получить в боте @userinfobot'
- 5. Запускайте командой:
+ 6. Запускайте командой:
  - 'cd ~/NeiroEva && source ~/NeiroEva/evavenv/bin/activate && python.py'
     - Если у вас оболочка терминала fish:
     - 'cd ~/NeiroEva && source ~/NeiroEva/evavenv/bin/activate.fish && python main.py'
