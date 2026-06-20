@@ -39,7 +39,7 @@
  4. Загрузите модель:
     - qwen2.5-7b-instruct-q4_k_m.gguf [👉Скачать](https://huggingface.co/paultimothymooney/Qwen2.5-7B-Instruct-Q4_K_M-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf?download=true). Копируйте из загрузок в папку models
  5. Создайте файл .env
- > 'nano ~/NeiroEva/.env'
+ > 'nano ~/NeiroEva/.env' <
  и впишите
  '''BOT_TOKEN=ваш_токен_от_BotFather
 CREATOR_ID=ваш_telegram_id #Можно получить в боте @userinfobot'''
