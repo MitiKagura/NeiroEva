@@ -52,7 +52,12 @@ async def build_selfie_prompt(mood_engine, location: str = "неизвестно
         mood_tag = "neutral expression"
     if horny > 0.6:
         mood_tag += ", playful"
-    return f"masterpiece, best quality, 1girl, dark blue hair, dark blue eyes, cat ears, cat tail, {mood_tag}, location: {location}, anime style, highres, detailed face, looking at viewer"
+    return (
+        f"masterpiece, best quality, 1girl, cat girl, pink hair, pink cat ears, pink cat tail, pink eyes, "
+        f"{mood_tag}, "
+        f"anime style, highres, detailed face, waist up, looking at viewer, "
+        f"(cat ears:1.5), (cat tail:1.5)"
+    )
 
 async def build_friend_prompt(mood_engine, friend_type: str, location: str) -> str:
     if friend_type == "agnes":
@@ -85,6 +90,7 @@ async def build_scene_prompt(mood_engine, scene_type: str, location: str) -> str
 # ---------- ОБРАБОТЧИК ФОТО ----------
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Получено фото")
+    user_id = update.effective_user.id
     mood_engine = context.bot_data.get("mood_engine")
     memory = context.bot_data.get("memory")
     vision = context.bot_data.get("vision")
@@ -123,8 +129,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             russian_reaction = "Красивое фото!"
         await update.message.reply_text(f"*смотрит фото* {russian_reaction}")
         if memory:
-            await memory.add_conversation_turn("user", f"[Фото: {eng_caption}]", mood_desc)
-            await memory.add_conversation_turn("eva", russian_reaction, mood_engine.get_mood_description())
+            await memory.add_conversation_turn(user_id, "user", f"[Фото: {eng_caption}]", mood_desc)
+            await memory.add_conversation_turn(user_id, "eva", russian_reaction, mood_engine.get_mood_description())
         return
     except Exception as e:
         logger.error(f"Ошибка фото: {e}", exc_info=True)
@@ -138,17 +144,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     logger.info(f"Обработка сообщения: {user_text}")
 
+    user_id = update.effective_user.id
+
+    # Получаем все необходимые объекты из bot_data
     mood_engine = context.bot_data.get("mood_engine")
     llm_engine = context.bot_data.get("llm_engine")
     memory = context.bot_data.get("memory")
     generator = context.bot_data.get("anime_gen")
     compute_lock = context.bot_data.get("compute_lock")
-    location_manager = context.bot_data.get("location")
+    location_manager = context.bot_data.get("location")   # <-- теперь здесь
 
     if not mood_engine or not llm_engine:
         logger.error("Отсутствуют необходимые компоненты")
         return
 
+    # Используем location_manager (уже определён)
+    loc = location_manager.get_full_location() if location_manager else "неизвестно"
     text_lower = user_text.lower()
 
     # ----- Прямая команда "Покажи Агнес" -----
@@ -340,8 +351,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not answer:
             answer = "*улыбнулась* Спасибо!" if action_type == "подарок" else "*пожимает плечами* Ладно."
         await send_with_retry(update, answer)
-        await memory.add_conversation_turn("user", user_text, mood_desc)
-        await memory.add_conversation_turn("eva", answer, mood_engine.get_mood_description())
+        await memory.add_conversation_turn(user_id, "user", user_text, mood_desc)
+        await memory.add_conversation_turn(user_id, "eva", answer, mood_engine.get_mood_description())
         return
 
     # ----- Анализ тональности -----
@@ -369,60 +380,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- Обычный ответ -----
     mood_desc = mood_engine.get_mood_description()
-    context_mem = await memory.get_last_n_days_context(3)
+    context_mem = await memory.get_last_n_days_context(user_id, 3)
     sys_prompt = llm_engine.make_system_prompt(mood_desc, context_mem)
-    history = await memory.get_conversation_history(8)
+    history = await memory.get_conversation_history(user_id, 8)
     history_text = "\n".join([f"{h['role']}: {h['content']}" for h in history[-4:]])
     prompt = f"История диалога:\n{history_text}\n\nПользователь: {user_text}\nЕва:"
+    answer = None  # инициализация
+    try:
+        async with compute_lock:
+            answer = await llm_engine.generate(
+                prompt,
+                sys_prompt,
+                max_tokens=250,
+                temperature=0.9,
+                repeat_penalty=1.5
+            )
+        # Постобработка
+        answer = re.sub(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', '', answer)
+        answer = re.sub(r'[a-zA-Z]', '', answer)
+        # Убираем "Пользователь:" и "Ева:" в начале ответа
+        answer = re.sub(r'^(Пользователь|User|Ева):\s*', '', answer, flags=re.IGNORECASE)
+        # Убираем строки, начинающиеся с "Пользователь:" внутри ответа
+        answer = re.sub(r'\n(Пользователь|User|Ева):.*?(?=\n|$)', '', answer, flags=re.IGNORECASE)
+        answer = re.sub(r'^\.{2,}\s*', '', answer)
+        answer = re.sub(r'(\*[а-яА-ЯёЁ]+\*)\s*\1', r'\1', answer)
+        if "поесть" in answer and not ("есть" in answer and "хочу" in answer):
+            answer = re.sub(r'вижу, ты хочешь меня поесть.*?[.!?]', '', answer)
+        answer = answer.strip()
 
-    # Получаем последний ответ Евы (если есть)
-    last_eva_answer = context.bot_data.get("last_eva_answer", "")
+        # Детектор повторов
+        # В блоке обычного ответа после генерации:
+        last_eva_answer = context.bot_data.get("last_eva_answer", "")
+        if answer and last_eva_answer:
+            # Сравниваем первые 30 символов
+            if answer[:30] == last_eva_answer[:30]:
+                logger.warning("Обнаружен похожий ответ, перегенерируем...")
+                answer = "*улыбнулась* Ты задаёшь интересные вопросы! 😊"
+        context.bot_data["last_eva_answer"] = answer
 
-    max_attempts = 3
-    for attempt in range(max_attempts):
-        try:
-            temp = 0.9 + (attempt * 0.1)  # повышаем температуру при каждой попытке
-            async with compute_lock:
-                answer = await llm_engine.generate(
-                    prompt,
-                    sys_prompt,
-                    max_tokens=250,
-                    temperature=min(temp, 1.2),
-                    repeat_penalty=1.5 + (attempt * 0.1)
-                )
-            # Постобработка
-            # Удаляем фразы типа "и также упоминала", "и тоже сказала" и т.п.
-            answer = re.sub(r'и\s+также\s+упоминала\s+[А-Яа-я]+:', '', answer)
-            answer = re.sub(r'и\s+тоже\s+сказала\s+[А-Яа-я]+:', '', answer)
-            answer = re.sub(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', '', answer)
-            answer = re.sub(r'[a-zA-Z]', '', answer)
-            answer = re.sub(r'^\.{2,}\s*', '', answer)
-            answer = re.sub(r'(\*[а-яА-ЯёЁ]+\*)\s*\1', r'\1', answer)
-            if "поесть" in answer and not ("есть" in answer and "хочу" in answer):
-                answer = re.sub(r'вижу, ты хочешь меня поесть.*?[.!?]', '', answer)
-            answer = answer.strip()
-
-            # Проверка на повтор
-            if answer and last_eva_answer and (
-                answer == last_eva_answer or
-                answer.split('.')[0] == last_eva_answer.split('.')[0]  # совпадает первое предложение
-            ):
-                logger.warning(f"Обнаружен повтор ответа (попытка {attempt+1}), перегенерируем...")
-                if attempt == max_attempts - 1:
-                    answer = "*улыбнулась* Ты задаёшь интересные вопросы! 😊"
-                continue
-            break
-        except Exception as e:
-            logger.error(f"Ошибка при генерации: {e}")
+        await memory.add_conversation_turn(user_id, "user", user_text, mood_desc)
+        await memory.add_conversation_turn(user_id, "eva", answer, mood_engine.get_mood_description())
+        await send_with_retry(update, answer)
+        # Обновление локации на основе ответа Евы
+        if location_manager and hasattr(location_manager, 'update_from_dialogue'):
+            await location_manager.update_from_dialogue(answer, is_eva=True)
+    except Exception as e:
+        logger.error(f"Ошибка при генерации или отправке ответа: {e}", exc_info=True)
+        # Определяем запасной ответ
+        if answer is None:
+            answer = "*улыбнулась* Я задумалась... повтори вопрос. 😊"
+        else:
             answer = "*улыбнулась* Всё хорошо! 😊"
-            break
-
-    # Сохраняем последний ответ
-    context.bot_data["last_eva_answer"] = answer
-
-    if not answer or len(answer) < 3:
-        answer = "*улыбнулась* Всё хорошо! 😊"
-
-    await memory.add_conversation_turn("user", user_text, mood_desc)
-    await memory.add_conversation_turn("eva", answer, mood_engine.get_mood_description())
-    await send_with_retry(update, answer)
+        try:
+            await send_with_retry(update, answer)
+        except Exception as send_error:
+            logger.error(f"Ошибка при отправке запасного ответа: {send_error}")
