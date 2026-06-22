@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -21,9 +22,9 @@ BACKUPS_DIR = BASE_DIR / "backups"
 
 # Настройки LLM
 LLM_MODEL_PATH = MODELS_DIR / "qwen2.5-7b-instruct-q4_k_m.gguf"
-LLM_CONTEXT_SIZE = 2048
-LLM_MAX_TOKENS = 256
-LLM_TEMPERATURE = 0.3
+LLM_CONTEXT_SIZE = 2048  # было 4096
+LLM_MAX_TOKENS = 150
+LLM_TEMPERATURE = 0.75
 
 # Настройки аниме-генерации
 ANIMEGAN_WEIGHTS_PATH = MODELS_DIR / "animegan" / "face_paint_512_v2.pt"
@@ -31,3 +32,18 @@ WAFU2X_PATH = MODELS_DIR / "waifu2x"
 
 # Прокси
 TOR_SOCKS_PORT = 9050
+
+def get_time_context() -> str:
+    """Возвращает строку с текущим временем суток."""
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "утро"
+    elif 12 <= hour < 17:
+        return "день"
+    elif 17 <= hour < 22:
+        return "вечер"
+    else:
+        return "ночь"
+def get_exact_time() -> str:
+    """Возвращает текущее время в формате ЧЧ:ММ."""
+    return datetime.now().strftime("%H:%M")
