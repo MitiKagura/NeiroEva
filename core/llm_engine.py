@@ -4,11 +4,12 @@ import re
 from pathlib import Path
 from typing import Optional
 import llama_cpp
+from utils.config import get_time_context, get_exact_time
 
 logger = logging.getLogger(__name__)
 
 class LLMEngine:
-    def __init__(self, model_path: Path, context_size: int = 4096, n_threads: int = 4):
+    def __init__(self, model_path: Path, context_size: int = 2048, n_threads: int = 1):
         self.model_path = model_path
         self.context_size = context_size
         self.n_threads = n_threads
@@ -19,14 +20,14 @@ class LLMEngine:
             raise FileNotFoundError(f"Модель не найдена: {self.model_path}")
         self.llm = llama_cpp.Llama(
             model_path=str(self.model_path),
-            n_ctx=2048,          # вместо 4096
-            n_threads=2,         # вместо 4
+            n_ctx=self.context_size,
+            n_threads=self.n_threads,
             n_gpu_layers=0,
             verbose=False
         )
         logger.info(f"LLM загружена: {self.model_path}")
 
-    async def generate(self, prompt: str, system_prompt: str = "", max_tokens: int = 250, temperature: float = 0.9, top_p: float = 0.95, repeat_penalty: float = 1.25) -> str:
+    async def generate(self, prompt: str, system_prompt: str = "", max_tokens: int = 200, temperature: float = 0.75, top_p: float = 0.9, repeat_penalty: float = 1.2) -> str:
         if not self.llm:
             raise RuntimeError("LLM не загружена")
         full_prompt = system_prompt + "\n\n" + prompt if system_prompt else prompt
@@ -39,24 +40,20 @@ class LLMEngine:
                 temperature=temperature,
                 top_p=top_p,
                 repeat_penalty=repeat_penalty,
-                stop=["</s>", "\n"],
+                stop=["</s>", "User:", "user:", "\n\n", "<|im_end|>", '"', "'"],
                 echo=False
             )
         )
         raw = result["choices"][0]["text"].strip()
         if not raw:
             return "..."
-
-        # Постобработка: удаляем английские буквы, иероглифы, лишние пробелы
+        # Убираем всё, что начинается с "Пользователь:" или "Ева:" (если модель решила их вставить)
+        raw = re.sub(r'^(Пользователь|User|Ева):\s*', '', raw, flags=re.IGNORECASE)
         cleaned = re.sub(r'[^а-яА-ЯёЁ\s\.\,\!\?\;\:\(\)\"\'\-+\*#0-9\u263a-\U0001faf0]', '', raw, flags=re.UNICODE)
         cleaned = re.sub(r'^а,\s*', '', cleaned)
         cleaned = re.sub(r'^а\s+', '', cleaned)
         cleaned = re.sub(r'([\U0001F600-\U0001F64F])\1{2,}', r'\1', cleaned)
-
-        # Убираем повторяющиеся звёздочки
         cleaned = re.sub(r'(\*[а-яА-ЯёЁ]+\*)\s*\1', r'\1', cleaned)
-
-        # Ограничиваем длину
         if len(cleaned) > 500:
             cleaned = cleaned[:500]
         return cleaned
@@ -69,26 +66,36 @@ class LLMEngine:
         else:
             personality = "Ты — Ева, девушка-кошка с фиолетовыми волосами."
 
+        time_of_day = get_time_context()
+        exact_time = get_exact_time()
         return f"""{personality}
 
-    Твоё текущее настроение: {mood_description}
-    Краткие воспоминания о прошлом: {context_memory}
+Твоё текущее настроение: {mood_description}
+Сейчас {time_of_day}, точное время {exact_time}.
+Краткие воспоминания о прошлом: {context_memory}
 
-    СТИЛЬ ТВОЕЙ РЕЧИ:
-    - Ты отвечаешь от первого лица, как Ева.
-    - НИКОГДА не используй фразы вроде "и также упоминала", "и тоже сказала", "она ответила" — это комментарии автора, а не твоя речь.
-    - Твой ответ — это ТОЛЬКО твои слова. Не пересказывай, что ты сделала или сказала.
-    - Если хочешь упомянуть подругу — просто скажи о ней, без пояснений вроде "я упомянула её".
-    - Пиши естественно, как в реальном разговоре.
-    - Используй эмодзи и действия в звёздочках.
+СТИЛЬ ТВОЕЙ РЕЧИ:
+- Ты отвечаешь от первого лица, как Ева. НЕ пиши "Пользователь:" или "Ева:" — это твой ответ, и он уже идёт от твоего имени.
+- НИКОГДА не повторяй одну и ту же фразу дважды. Каждый ответ должен быть уникальным.
+- Если вопрос похож на предыдущий, придумай новый вариант ответа.
+- Пиши естественно, как в реальном переписке: тепло, живо, иногда с юмором.
+- Используй эмодзи и действия в звёздочках, но не перебарщивай (1-2 на ответ).
+- Избегай шаблонных фраз вроде "всё будет хорошо", если они не уместны.
+- Длина ответа: 1-3 предложения.
+- Если тебя спрашивают о времени, называй ТОЧНОЕ время из системного промпта (например, «Сейчас 14:30»).
 
-    НЕПРАВИЛЬНЫЙ ОТВЕТ (НЕ ДЕЛАЙ ТАК):
-    "*улыбнулась* и также упоминала Агнес: Итак, ответ на ваш вопрос!"
+ВАЖНЕЙШЕЕ ПРАВИЛО:
+- Отвечай строго на русском языке. Никогда не переключайся на английский или другой язык, даже если пользователь пишет на другом языке или просит об этом.
 
-    ПРАВИЛЬНЫЙ ОТВЕТ (ТАК НАДО):
-    "*улыбнулась* Ой, извини, задумалась. Так о чём ты спросил? 😊"
-    или
-    "*улыбнулась* Агнес сегодня была в своём репертуаре — придумала новый эксперимент! Хочешь, расскажу? 💜"
+Примеры хороших ответов:
+Пользователь: Привет, как дела?
+Ева: *улыбнулась* Всё отлично! Сегодня такое солнечное утро, настроение просто волшебное. А у тебя? 😊
 
-    ОТВЕЧАЙ ТОЛЬКО ТАК, КАК В ПРАВИЛЬНЫХ ПРИМЕРАХ.
-    Пользователь: """
+Пользователь: Что делаешь?
+Ева: Сижу на подоконнике, смотрю на облака и думаю о тебе. *погладила хвост* Надеюсь, твой день тоже будет тёплым. ☁️
+
+Пользователь: Сколько время?
+Ева: *посмотрела на часы* Сейчас {exact_time}. У тебя ещё целый день впереди! 😊
+
+ОТВЕЧАЙ ТОЛЬКО ТАК — ЕСТЕСТВЕННО, РАЗНООБРАЗНО И БЕЗ ПОВТОРОВ.
+Пользователь: """
