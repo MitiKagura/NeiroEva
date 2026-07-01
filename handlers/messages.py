@@ -5,11 +5,23 @@ import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.error import TimedOut, NetworkError
+from utils.config import LORA_AGNES_PATH
 
 logger = logging.getLogger(__name__)
 
+# ---------- ПУЛ FALLBACK-ОТВЕТОВ ----------
+FALLBACK_RESPONSES = [
+    "*улыбнулась* Мне нужно немного времени, чтобы подумать...",
+    "*задумалась, глядя в окно* Хмм... интересный вопрос.",
+    "*почесала за ушком* Ой, я немного отвлеклась. Что ты сказал?",
+    "*погладила хвост* Я тут подумала... и пришла к выводу, что это очень глубокий вопрос.",
+    "*улыбнулась* Иногда молчание — лучший ответ. Но я скажу так: ты у меня самый лучший.",
+    "*посмотрела на тебя с нежностью* Ты знаешь, я тоже часто задумываюсь о таких вещах.",
+    "*потянулась* Устала немного, но для тебя я всегда найду слова.",
+]
+
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ОТПРАВКИ ----------
-async def send_with_retry(update: Update, text: str, max_retries=5, timeout=300):
+async def send_with_retry(update: Update, text: str, max_retries=5, timeout=600):
     for attempt in range(max_retries):
         try:
             await update.message.reply_text(text, read_timeout=timeout, write_timeout=timeout, connect_timeout=timeout)
@@ -21,7 +33,7 @@ async def send_with_retry(update: Update, text: str, max_retries=5, timeout=300)
                 return
             await asyncio.sleep(5 * (attempt + 1))
 
-async def send_photo_with_retry(update: Update, photo_path, caption, max_retries=5, timeout=300):
+async def send_photo_with_retry(update: Update, photo_path, caption, max_retries=5, timeout=600):
     for attempt in range(max_retries):
         try:
             with open(photo_path, 'rb') as f:
@@ -62,18 +74,18 @@ async def build_selfie_prompt(mood_engine, location: str = "неизвестно
 async def build_friend_prompt(mood_engine, friend_type: str, location: str) -> str:
     if friend_type == "agnes":
         return (
-            "masterpiece, best quality, anime style, highres, detailed face, cute\n"
-            "1girl, horse girl, horse ears, horse tail, short messy brown hair, red eyes, "
-            "wearing a long white lab coat, yellow sweater vest, black collared shirt, black necktie, "
-            "black pantyhose, white heeled boots, standing, full body\n"
-            f"location: {location}"
+            "masterpiece, best quality, anime style, highres, detailed face, "
+            "1girl, horse girl, horse ears, horse tail, short messy brown hair, ahoge, hair between eyes, "
+            "red eyes, single earring, white lab coat, yellow sweater vest, black collared shirt, black necktie, "
+            "waist up, upper body, science lab background, "
+            "confident expression, holding a test tube, detailed clothing"
         )
     else:  # violet
         return (
-            "masterpiece, best quality, anime style, highres, detailed face, elegant\n"
+            "masterpiece, best quality, anime style, highres, detailed face, elegant, "
             "1girl, cat girl, long purple hair, black cat ears, black cat tail, gothic lolita dress, "
-            "pale skin, red eyes, mysterious, standing, full body\n"
-            f"location: {location}"
+            "pale skin, red eyes, mysterious, waist up, upper body, dark gothic room, candles, books, "
+            "detailed lace, elegant pose, looking at viewer with a calm expression"
         )
 
 async def build_scene_prompt(mood_engine, scene_type: str, location: str) -> str:
@@ -91,13 +103,25 @@ async def build_scene_prompt(mood_engine, scene_type: str, location: str) -> str
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Получено фото")
     user_id = update.effective_user.id
+    if user_id is None:
+        user_id = 0
     mood_engine = context.bot_data.get("mood_engine")
     memory = context.bot_data.get("memory")
     vision = context.bot_data.get("vision")
     llm = context.bot_data.get("llm_engine")
+
     if not vision or not llm:
         await update.message.reply_text("Пока не умею смотреть фото.")
         return
+
+    # Регистрируем пользователя (без запроса имени)
+    if memory:
+        await memory.ensure_user(user_id,
+                                 username=update.effective_user.username,
+                                 first_name=update.effective_user.first_name,
+                                 last_name=update.effective_user.last_name)
+        await memory.add_conversation_turn(user_id, "user", "[Фото]", mood_engine.get_mood_description())
+
     try:
         photo = update.message.photo[-1]
         for attempt in range(3):
@@ -129,12 +153,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             russian_reaction = "Красивое фото!"
         await update.message.reply_text(f"*смотрит фото* {russian_reaction}")
         if memory:
-            await memory.add_conversation_turn(user_id, "user", f"[Фото: {eng_caption}]", mood_desc)
             await memory.add_conversation_turn(user_id, "eva", russian_reaction, mood_engine.get_mood_description())
         return
     except Exception as e:
         logger.error(f"Ошибка фото: {e}", exc_info=True)
-        await update.message.reply_text("Не получилось разобрать фото.")
+        fallback = random.choice(FALLBACK_RESPONSES)
+        await update.message.reply_text(f"*смотрит фото* {fallback}")
+        if memory:
+            await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
         return
 
 # ---------- ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ----------
@@ -142,23 +168,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     if not user_text:
         return
-    logger.info(f"Обработка сообщения: {user_text}")
 
     user_id = update.effective_user.id
+    if user_id is None:
+        user_id = 0
 
-    # Получаем все необходимые объекты из bot_data
     mood_engine = context.bot_data.get("mood_engine")
     llm_engine = context.bot_data.get("llm_engine")
     memory = context.bot_data.get("memory")
     generator = context.bot_data.get("anime_gen")
     compute_lock = context.bot_data.get("compute_lock")
-    location_manager = context.bot_data.get("location")   # <-- теперь здесь
+    location_manager = context.bot_data.get("location")
 
     if not mood_engine or not llm_engine:
         logger.error("Отсутствуют необходимые компоненты")
         return
 
-    # Используем location_manager (уже определён)
+    # ----- Регистрация пользователя (без запроса имени) -----
+    if memory:
+        await memory.ensure_user(user_id,
+                                 username=update.effective_user.username,
+                                 first_name=update.effective_user.first_name,
+                                 last_name=update.effective_user.last_name)
+
+        # Обработка ответа на запрос имени (если ожидаем)
+        if context.user_data.get('waiting_for_name'):
+            await memory.set_user_name(user_id, user_text)
+            await update.message.reply_text(f"Отлично, {user_text}! Буду звать тебя так. 💜")
+            context.user_data['waiting_for_name'] = False
+            return
+
+        # ----- СОХРАНЯЕМ ВОПРОС ПОЛЬЗОВАТЕЛЯ СРАЗУ -----
+        await memory.add_conversation_turn(user_id, "user", user_text, mood_engine.get_mood_description())
+    else:
+        logger.warning("Память не инициализирована, запись невозможна")
+
     loc = location_manager.get_full_location() if location_manager else "неизвестно"
     text_lower = user_text.lower()
 
@@ -169,18 +213,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         loc = location_manager.current_location if location_manager else "неизвестно"
         prompt_friend = (
             "masterpiece, best quality, anime style, highres, detailed face, "
-            "1girl, horse girl, horse ears, horse tail, short messy brown hair, red eyes, "
-            "wearing a long white lab coat, yellow sweater vest, black collared shirt, black necktie, "
-            "black pantyhose, white heeled boots, standing, full body"
+            "1girl, horse girl, horse ears, horse tail, short messy brown hair, ahoge, hair between eyes, "
+            "red eyes, single earring, white lab coat, yellow sweater vest, black collared shirt, black necktie, "
+            "waist up, upper body, science lab background, "
+            "confident expression, holding a test tube, detailed clothing"
         )
-        negative = "cat ears, cat tail, pink hair, purple hair, school uniform, pink eyes"
+        negative = "cat ears, cat tail, pink hair, purple hair, school uniform, pink eyes, extra horse, two horses, multiple horses, duplicate horse, background horse, full body, legs, feet, shoes, deformed, bad anatomy"
+        lora_path = str(LORA_AGNES_PATH) if LORA_AGNES_PATH.exists() else None
         try:
             async with compute_lock:
-                image_path = await generator.generate_selfie(prompt_friend, loc, use_reference=False, negative_prompt=negative)
+                image_path = await generator.generate_selfie(prompt_friend, loc, reference_key="agnes", lora_path=lora_path, negative_prompt=negative)
             await send_photo_with_retry(update, image_path, "🐴 Агнес Такион")
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", "[Фото Агнес]", mood_engine.get_mood_description())
         except Exception as e:
             logger.error(f"Ошибка генерации Агнес: {e}", exc_info=True)
-            await send_with_retry(update, "Не получилось показать Агнес.")
+            fallback = "Не получилось показать Агнес. Попробуй позже."
+            await send_with_retry(update, fallback)
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
         return
 
     # ----- Селфи -----
@@ -191,11 +242,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt_selfie = await build_selfie_prompt(mood_engine, loc)
         try:
             async with compute_lock:
-                image_path = await generator.generate_selfie(prompt_selfie, loc, use_reference=True)
+                image_path = await generator.generate_selfie(prompt_selfie, loc, reference_key="eva")
             await send_photo_with_retry(update, image_path, "Вот как я выгляжу 💜")
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", "[Селфи]", mood_engine.get_mood_description())
         except Exception as e:
             logger.error(f"Ошибка генерации селфи: {e}")
-            await send_with_retry(update, "Не получилось сделать селфи, попробуй позже.")
+            fallback = "Не получилось сделать селфи, попробуй позже."
+            await send_with_retry(update, fallback)
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
         return
 
     # ----- Показ леса, дома, города, подруг -----
@@ -210,11 +266,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt_scene = await build_scene_prompt(mood_engine, "forest", loc)
             try:
                 async with compute_lock:
-                    image_path = await generator.generate_selfie(prompt_scene, loc, use_reference=False)
+                    image_path = await generator.generate_selfie(prompt_scene, loc, reference_key=None)
                 await send_photo_with_retry(update, image_path, "🌲 Лес")
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", "[Фото леса]", mood_engine.get_mood_description())
             except Exception as e:
                 logger.error(f"Ошибка: {e}")
-                await send_with_retry(update, "Не могу показать лес.")
+                fallback = "Не могу показать лес."
+                await send_with_retry(update, fallback)
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
             return
         if "дом" in query or "комнат" in query:
             await send_with_retry(update, "🔍 Показываю дом...")
@@ -222,11 +283,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt_scene = await build_scene_prompt(mood_engine, "home", loc)
             try:
                 async with compute_lock:
-                    image_path = await generator.generate_selfie(prompt_scene, loc, use_reference=False)
+                    image_path = await generator.generate_selfie(prompt_scene, loc, reference_key=None)
                 await send_photo_with_retry(update, image_path, "🏠 Дом")
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", "[Фото дома]", mood_engine.get_mood_description())
             except Exception as e:
                 logger.error(f"Ошибка: {e}")
-                await send_with_retry(update, "Не могу показать дом.")
+                fallback = "Не могу показать дом."
+                await send_with_retry(update, fallback)
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
             return
         if "город" in query or "улиц" in query:
             await send_with_retry(update, "🔍 Показываю город...")
@@ -234,11 +300,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt_scene = await build_scene_prompt(mood_engine, "city", loc)
             try:
                 async with compute_lock:
-                    image_path = await generator.generate_selfie(prompt_scene, loc, use_reference=False)
+                    image_path = await generator.generate_selfie(prompt_scene, loc, reference_key=None)
                 await send_photo_with_retry(update, image_path, "🌆 Город")
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", "[Фото города]", mood_engine.get_mood_description())
             except Exception as e:
                 logger.error(f"Ошибка: {e}")
-                await send_with_retry(update, "Не могу показать город.")
+                fallback = "Не могу показать город."
+                await send_with_retry(update, fallback)
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
             return
 
         # Подруги
@@ -256,14 +327,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_with_retry(update, f"🔍 Показываю {caption}...")
             loc = location_manager.current_location if location_manager else "неизвестно"
             prompt_friend = await build_friend_prompt(mood_engine, friend_type, loc)
-            negative = "cat ears, cat tail, pink hair" if friend_type == "agnes" else ""
+            negative = "extra horse, two horses, multiple horses, duplicate horse, background horse, full body, legs, feet, shoes, deformed, bad anatomy" if friend_type == "agnes" else "full body, legs, feet, shoes, extra limbs, deformed, bad anatomy"
             try:
                 async with compute_lock:
-                    image_path = await generator.generate_selfie(prompt_friend, loc, use_reference=False, negative_prompt=negative)
+                    image_path = await generator.generate_selfie(prompt_friend, loc, reference_key=friend_type if friend_type in ["agnes","violet"] else None, negative_prompt=negative)
                 await send_photo_with_retry(update, image_path, caption)
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", f"[Фото {caption}]", mood_engine.get_mood_description())
             except Exception as e:
                 logger.error(f"Ошибка генерации подруги: {e}", exc_info=True)
-                await send_with_retry(update, "Не могу показать, попробуй позже.")
+                fallback = f"Не могу показать {caption}, попробуй позже."
+                await send_with_retry(update, fallback)
+                if memory:
+                    await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
             return
 
         # Общая сцена
@@ -272,11 +348,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt_scene = await build_scene_prompt(mood_engine, "generic", loc)
         try:
             async with compute_lock:
-                image_path = await generator.generate_selfie(prompt_scene, loc, use_reference=False)
+                image_path = await generator.generate_selfie(prompt_scene, loc, reference_key=None)
             await send_photo_with_retry(update, image_path, "🌍 Вот что вокруг")
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", "[Фото окружения]", mood_engine.get_mood_description())
         except Exception as e:
             logger.error(f"Ошибка: {e}")
-            await send_with_retry(update, "Не могу показать.")
+            fallback = "Не могу показать."
+            await send_with_retry(update, fallback)
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
         return
 
     # ----- Подарки / извинения (динамические) -----
@@ -343,16 +424,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Ты {'обрадовалась' if positive else 'отреагировала нейтрально'}. Напиши короткий ответ (1-2 предложения) на русском, с эмодзи и действиями в звёздочках, который показывает твою реакцию.
 Если рада — поблагодари, если нейтрально — скажи что-то вежливое. Ответ:"""
 
-        async with compute_lock:
-            answer = await llm_engine.generate(prompt, max_tokens=70, temperature=0.7)
-        answer = answer.strip()
-        if answer.startswith("а,"):
-            answer = answer[2:].strip()
-        if not answer:
-            answer = "*улыбнулась* Спасибо!" if action_type == "подарок" else "*пожимает плечами* Ладно."
-        await send_with_retry(update, answer)
-        await memory.add_conversation_turn(user_id, "user", user_text, mood_desc)
-        await memory.add_conversation_turn(user_id, "eva", answer, mood_engine.get_mood_description())
+        try:
+            async with compute_lock:
+                answer = await llm_engine.generate(prompt, max_tokens=70, temperature=0.7)
+            answer = answer.strip()
+            if answer.startswith("а,"):
+                answer = answer[2:].strip()
+            if not answer:
+                answer = "*улыбнулась* Спасибо!" if action_type == "подарок" else "*пожимает плечами* Ладно."
+            await send_with_retry(update, answer)
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", answer, mood_engine.get_mood_description())
+        except Exception as e:
+            logger.error(f"Ошибка при генерации/отправке реакции на подарок/извинение: {e}")
+            fallback = random.choice(FALLBACK_RESPONSES)
+            await send_with_retry(update, fallback)
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
         return
 
     # ----- Анализ тональности -----
@@ -380,12 +468,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- Обычный ответ -----
     mood_desc = mood_engine.get_mood_description()
-    context_mem = await memory.get_last_n_days_context(user_id, 3)
+    context_mem = await memory.get_last_n_days_context(user_id, 3) if memory else ""
     sys_prompt = llm_engine.make_system_prompt(mood_desc, context_mem)
-    history = await memory.get_conversation_history(user_id, 8)
+    history = await memory.get_conversation_history(user_id, 8) if memory else []
     history_text = "\n".join([f"{h['role']}: {h['content']}" for h in history[-4:]])
     prompt = f"История диалога:\n{history_text}\n\nПользователь: {user_text}\nЕва:"
-    answer = None  # инициализация
+    answer = None
     try:
         async with compute_lock:
             answer = await llm_engine.generate(
@@ -398,9 +486,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Постобработка
         answer = re.sub(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', '', answer)
         answer = re.sub(r'[a-zA-Z]', '', answer)
-        # Убираем "Пользователь:" и "Ева:" в начале ответа
         answer = re.sub(r'^(Пользователь|User|Ева):\s*', '', answer, flags=re.IGNORECASE)
-        # Убираем строки, начинающиеся с "Пользователь:" внутри ответа
         answer = re.sub(r'\n(Пользователь|User|Ева):.*?(?=\n|$)', '', answer, flags=re.IGNORECASE)
         answer = re.sub(r'^\.{2,}\s*', '', answer)
         answer = re.sub(r'(\*[а-яА-ЯёЁ]+\*)\s*\1', r'\1', answer)
@@ -409,29 +495,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = answer.strip()
 
         # Детектор повторов
-        # В блоке обычного ответа после генерации:
         last_eva_answer = context.bot_data.get("last_eva_answer", "")
         if answer and last_eva_answer:
-            # Сравниваем первые 30 символов
             if answer[:30] == last_eva_answer[:30]:
                 logger.warning("Обнаружен похожий ответ, перегенерируем...")
-                answer = "*улыбнулась* Ты задаёшь интересные вопросы! 😊"
+                answer = random.choice(FALLBACK_RESPONSES)
         context.bot_data["last_eva_answer"] = answer
 
-        await memory.add_conversation_turn(user_id, "user", user_text, mood_desc)
-        await memory.add_conversation_turn(user_id, "eva", answer, mood_engine.get_mood_description())
+        # Сохраняем ответ Евы
+        if memory:
+            await memory.add_conversation_turn(user_id, "eva", answer, mood_engine.get_mood_description())
         await send_with_retry(update, answer)
+
         # Обновление локации на основе ответа Евы
         if location_manager and hasattr(location_manager, 'update_from_dialogue'):
             await location_manager.update_from_dialogue(answer, is_eva=True)
     except Exception as e:
         logger.error(f"Ошибка при генерации или отправке ответа: {e}", exc_info=True)
-        # Определяем запасной ответ
-        if answer is None:
-            answer = "*улыбнулась* Я задумалась... повтори вопрос. 😊"
-        else:
-            answer = "*улыбнулась* Всё хорошо! 😊"
+        # Повторная попытка с более низкими параметрами
         try:
+            logger.info("Повторная попытка генерации с уменьшенными параметрами...")
+            async with compute_lock:
+                answer = await llm_engine.generate(
+                    prompt,
+                    sys_prompt,
+                    max_tokens=180,
+                    temperature=0.8,
+                    repeat_penalty=1.3
+                )
+            answer = re.sub(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', '', answer)
+            answer = re.sub(r'[a-zA-Z]', '', answer)
+            answer = re.sub(r'^(Пользователь|User|Ева):\s*', '', answer, flags=re.IGNORECASE)
+            answer = re.sub(r'\n(Пользователь|User|Ева):.*?(?=\n|$)', '', answer, flags=re.IGNORECASE)
+            answer = answer.strip()
+            if not answer or len(answer) < 3:
+                raise ValueError("Пустой ответ после второй попытки")
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", answer, mood_engine.get_mood_description())
             await send_with_retry(update, answer)
-        except Exception as send_error:
-            logger.error(f"Ошибка при отправке запасного ответа: {send_error}")
+        except Exception as e2:
+            logger.error(f"Вторая попытка тоже не удалась: {e2}")
+            fallback = random.choice(FALLBACK_RESPONSES)
+            if memory:
+                await memory.add_conversation_turn(user_id, "eva", fallback, mood_engine.get_mood_description())
+            try:
+                await send_with_retry(update, fallback)
+            except Exception as send_error:
+                logger.error(f"Ошибка при отправке запасного ответа: {send_error}")
