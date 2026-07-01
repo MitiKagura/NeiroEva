@@ -1,81 +1,19 @@
 import logging
-import asyncio
+import requests
 import re
 import random
 from pathlib import Path
 from typing import Optional
-import llama_cpp
-from utils.config import get_time_context, get_exact_time
 
 logger = logging.getLogger(__name__)
 
-class LLMEngine:
-    def __init__(self, model_path: Path, context_size: int = 2048, n_threads: int = 1):
-        self.model_path = model_path
-        self.context_size = context_size
-        self.n_threads = n_threads
-        self.llm: Optional[llama_cpp.Llama] = None
+class ColabLLMEngine:
+    def __init__(self, colab_url: str):
+        self.colab_url = colab_url.rstrip('/')
+        self.proxies = None
 
     def load(self):
-        if not self.model_path.exists():
-            raise FileNotFoundError(f"Модель не найдена: {self.model_path}")
-        self.llm = llama_cpp.Llama(
-            model_path=str(self.model_path),
-            n_ctx=self.context_size,
-            n_threads=self.n_threads,
-            n_gpu_layers=0,
-            verbose=False
-        )
-        logger.info(f"LLM загружена: {self.model_path}")
-
-    def _get_fallback(self) -> str:
-        fallbacks = [
-            "*улыбнулась* Мне нужно немного времени, чтобы подумать...",
-            "*задумалась, глядя в окно* Хмм... интересный вопрос.",
-            "*почесала за ушком* Ой, я немного отвлеклась. Что ты сказал?",
-            "*погладила хвост* Я тут подумала... и пришла к выводу, что это очень глубокий вопрос.",
-            "*улыбнулась* Иногда молчание — лучший ответ. Но я скажу так: ты у меня самый лучший.",
-            "*посмотрела на тебя с нежностью* Ты знаешь, я тоже часто задумываюсь о таких вещах.",
-            "*потянулась* Устала немного, но для тебя я всегда найду слова.",
-        ]
-        return random.choice(fallbacks)
-
-    async def generate(self, prompt: str, system_prompt: str = "", max_tokens: int = 200, temperature: float = 0.75, top_p: float = 0.9, repeat_penalty: float = 1.2) -> str:
-        if not self.llm:
-            raise RuntimeError("LLM не загружена")
-        full_prompt = system_prompt + "\n\n" + prompt if system_prompt else prompt
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: self.llm(
-                full_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                repeat_penalty=repeat_penalty,
-                stop=["</s>", "User:", "user:", "\n\n", "<|im_end|>", '"', "'"],
-                echo=False
-            )
-        )
-        raw = result["choices"][0]["text"].strip()
-        if not raw or len(raw.strip()) < 3:
-            return self._get_fallback()
-
-        # Жёсткая чистка от чужих реплик
-        raw = re.sub(r'^(Пользователь|User|Ева):\s*', '', raw, flags=re.IGNORECASE)
-        cleaned = re.sub(r'[^а-яА-ЯёЁ\s\.\,\!\?\;\:\(\)\"\'\-+\*#0-9\u263a-\U0001faf0]', '', raw, flags=re.UNICODE)
-        cleaned = re.sub(r'^а,\s*', '', cleaned)
-        cleaned = re.sub(r'^а\s+', '', cleaned)
-        cleaned = re.sub(r'([\U0001F600-\U0001F64F])\1{2,}', r'\1', cleaned)
-        cleaned = re.sub(r'(\*[а-яА-ЯёЁ]+\*)\s*\1', r'\1', cleaned)
-        # Удаляем любые строки, начинающиеся с имени и двоеточия (русские имена)
-        cleaned = re.sub(r'^[А-ЯЁ][а-яё]+\s*:.*$', '', cleaned, flags=re.MULTILINE)
-        cleaned = re.sub(r'[А-ЯЁ][а-яё]+\s*:\s*', '', cleaned)
-        if len(cleaned) > 500:
-            cleaned = cleaned[:500]
-        if not cleaned or len(cleaned.strip()) < 2:
-            return self._get_fallback()
-        return cleaned
+        logger.info("Используется удалённый LLM на Colab")
 
     def make_system_prompt(self, mood_description: str, context_memory: str) -> str:
         personality_path = Path(__file__).parent.parent / "data" / "personality.md"
@@ -85,8 +23,10 @@ class LLMEngine:
         else:
             personality = "Ты — Ева, девушка-кошка с фиолетовыми волосами."
 
+        from utils.config import get_time_context, get_exact_time
         time_of_day = get_time_context()
         exact_time = get_exact_time()
+
         return f"""{personality}
 
 Твоё текущее настроение: {mood_description}
@@ -125,3 +65,54 @@ class LLMEngine:
 И НИКОГДА НЕ ПИШИ ОТ ИМЕНИ ПОЛЬЗОВАТЕЛЯ.
 
 Пользователь: """
+
+    def _get_fallback(self) -> str:
+        fallbacks = [
+            "*улыбнулась* Мне нужно немного времени, чтобы подумать...",
+            "*задумалась, глядя в окно* Хмм... интересный вопрос.",
+            "*почесала за ушком* Ой, я немного отвлеклась. Что ты сказал?",
+            "*погладила хвост* Я тут подумала... и пришла к выводу, что это очень глубокий вопрос.",
+            "*улыбнулась* Иногда молчание — лучший ответ. Но я скажу так: ты у меня самый лучший.",
+            "*посмотрела на тебя с нежностью* Ты знаешь, я тоже часто задумываюсь о таких вещах.",
+            "*потянулась* Устала немного, но для тебя я всегда найду слова.",
+        ]
+        return random.choice(fallbacks)
+
+    async def generate(self, prompt: str, system_prompt: str = "", max_tokens: int = 200, temperature: float = 0.7, top_p: float = 0.9, repeat_penalty: float = 1.2) -> str:
+        payload = {
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "repeat_penalty": repeat_penalty,
+        }
+        try:
+            response = requests.post(
+                f"{self.colab_url}/generate_text",
+                json=payload,
+                timeout=300,
+                proxies=self.proxies
+            )
+            response.raise_for_status()
+            data = response.json()
+            raw = data["response"]
+            if not raw or len(raw.strip()) < 3:
+                return self._get_fallback()
+            # Жёсткая чистка от чужих реплик
+            raw = re.sub(r'^(Пользователь|User|Ева):\s*', '', raw, flags=re.IGNORECASE)
+            cleaned = re.sub(r'[^а-яА-ЯёЁ\s\.\,\!\?\;\:\(\)\"\'\-+\*#0-9\u263a-\U0001faf0]', '', raw, flags=re.UNICODE)
+            cleaned = re.sub(r'^а,\s*', '', cleaned)
+            cleaned = re.sub(r'^а\s+', '', cleaned)
+            cleaned = re.sub(r'([\U0001F600-\U0001F64F])\1{2,}', r'\1', cleaned)
+            cleaned = re.sub(r'(\*[а-яА-ЯёЁ]+\*)\s*\1', r'\1', cleaned)
+            cleaned = re.sub(r'^[А-ЯЁ][а-яё]+\s*:.*$', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'[А-ЯЁ][а-яё]+\s*:\s*', '', cleaned)
+            if len(cleaned) > 500:
+                cleaned = cleaned[:500]
+            if not cleaned or len(cleaned.strip()) < 2:
+                return self._get_fallback()
+            return cleaned
+        except Exception as e:
+            logger.exception("Ошибка запроса к Colab LLM")
+            return self._get_fallback()

@@ -5,14 +5,25 @@ import random
 import re
 from pathlib import Path
 from datetime import datetime
+from utils.config import LORA_AGNES_PATH
 
 logger = logging.getLogger(__name__)
 
 class LocationManager:
+    # Список допустимых главных локаций (совпадает с location_map в генераторах)
+    ALLOWED_LOCATIONS = {
+        "родной дом", "дом Миши", "дом Агнес", "дом Виолетты",
+        "подоконник", "кровать", "кухня", "парк", "лес", "город",
+        "кафе", "пляж", "автобус", "гости", "улица", "деревня",
+        "в пути"
+    }
+    # Дополнительные локации (сублокации)
+    ALLOWED_SUB_LOCATIONS = {"кухня", "кровать", "подоконник", "гостиная"}
+
     def __init__(self, data_path: Path):
         self.data_path = data_path
         self.current_location = "родной дом"  # главная локация
-        self.sub_location = ""  # дополнительная локация (кухня, кровать и т.д.)
+        self.sub_location = ""  # дополнительная локация
         self.pending_events = []
         self.pending_shows = []
         self._load()
@@ -26,6 +37,10 @@ class LocationManager:
                 self.sub_location = data.get("sub_location", "")
                 self.pending_events = data.get("pending_events", [])
                 self.pending_shows = data.get("pending_shows", [])
+                # Проверяем, что загруженная локация допустима
+                if self.current_location not in self.ALLOWED_LOCATIONS:
+                    logger.warning(f"Загружена недопустимая локация: {self.current_location}, сбрасываем на 'родной дом'")
+                    self.current_location = "родной дом"
                 logger.info(f"Локация загружена: {self.current_location}, {self.sub_location}")
             except Exception as e:
                 logger.error(f"Ошибка загрузки локации: {e}")
@@ -44,6 +59,13 @@ class LocationManager:
             logger.error(f"Ошибка сохранения локации: {e}")
 
     async def set_location(self, main_location: str, sub_location: str = "", source: str = "context"):
+        # Проверка допустимости
+        if main_location not in self.ALLOWED_LOCATIONS:
+            logger.warning(f"Попытка установить недопустимую локацию: {main_location}, игнорируем")
+            return
+        if sub_location and sub_location not in self.ALLOWED_SUB_LOCATIONS:
+            logger.warning(f"Попытка установить недопустимую сублокацию: {sub_location}, игнорируем")
+            sub_location = ""
         old_main = self.current_location
         old_sub = self.sub_location
         self.current_location = main_location
@@ -52,6 +74,9 @@ class LocationManager:
         logger.info(f"Локация изменена: {old_main}/{old_sub} -> {main_location}/{sub_location} (источник: {source})")
 
     async def set_sub_location(self, sub_location: str, source: str = "context"):
+        if sub_location not in self.ALLOWED_SUB_LOCATIONS:
+            logger.warning(f"Попытка установить недопустимую сублокацию: {sub_location}, игнорируем")
+            return
         old_sub = self.sub_location
         self.sub_location = sub_location
         self.save()
@@ -131,7 +156,7 @@ class LocationManager:
                 try:
                     if person == "agnes":
                         prompt_img = "masterpiece, best quality, anime style, highres, detailed face, 1girl, horse girl, horse ears, horse tail, upper body, short messy brown hair, ahoge, red eyes, empty eyes, single earring, labcoat, sleeves past fingers, yellow sweater vest, black shirt, black necktie, pantyhose, white high heels, looking at viewer"
-                        lora_path = "/home/rbur/NeiroEva/models/agnes_lora.safetensors"
+                        lora_path = str(LORA_AGNES_PATH) if LORA_AGNES_PATH.exists() else None
                         ref_key = "agnes"
                     else:
                         prompt_img = "masterpiece, best quality, anime style, highres, detailed face, elegant, 1girl, cat girl, long purple hair, black cat ears, black cat tail, gothic lolita dress, pale skin, red eyes, mysterious, upper body, looking at viewer"
@@ -154,66 +179,52 @@ class LocationManager:
             return
         lowered = text.lower()
 
-        # Сопоставление ключевых фраз с локациями (главная + дополнительная)
-        location_rules = [
-            # Главные локации
-            (r'родной дом|мой дом|домой|к тебе', "родной дом", ""),
-            (r'дом миши|к мише', "дом Миши", ""),
-            (r'дом агнес|лаборатория агнес|к агнес', "дом Агнес", ""),
-            (r'дом виолетты|к виолетте', "дом Виолетты", ""),
-            # Дополнительные локации
-            (r'кухня|на кухне', "", "кухня"),
-            (r'кровать|лежу|лежать|в кровати', "", "кровать"),
-            (r'подоконник|на подоконнике', "", "подоконник"),
-            (r'гостиная|комната', "", "гостиная"),
-            (r'парк|в парке', "парк", ""),
-            (r'лес|в лесу', "лес", ""),
-            (r'город|в городе', "город", ""),
-            (r'кафе|в кафе', "кафе", ""),
-            (r'пляж|на пляже', "пляж", ""),
-            (r'автобус|в автобусе', "автобус", ""),
-            (r'гости|в гостях', "гости", ""),
-            (r'улица|на улице', "улица", ""),
-            (r'деревня|в деревне', "деревня", ""),
-        ]
+        # Сначала проверяем явные упоминания локаций из белого списка
+        for loc in self.ALLOWED_LOCATIONS:
+            if loc in lowered:
+                # Проверяем, не является ли это частью другой фразы (например, "дом" в "домой" может быть частью)
+                # Для простоты используем границы слова
+                if re.search(rf'\b{re.escape(loc)}\b', lowered):
+                    await self.set_location(loc, "", source="диалог (упоминание)")
+                    logger.info(f"Локация обновлена из диалога: {loc}")
+                    return
 
-        for pattern, main_loc, sub_loc in location_rules:
-            if re.search(pattern, lowered):
-                if main_loc:
-                    await self.set_location(main_loc, sub_loc, source="диалог (упоминание)")
-                else:
-                    # только дополнительная локация
-                    await self.set_sub_location(sub_loc, source="диалог (упоминание)")
-                logger.info(f"Локация обновлена из диалога: {main_loc}/{sub_loc}")
+        # Проверяем сублокации (они могут быть частью главной локации)
+        for sub in self.ALLOWED_SUB_LOCATIONS:
+            if sub in lowered and re.search(rf'\b{re.escape(sub)}\b', lowered):
+                await self.set_sub_location(sub, source="диалог (упоминание)")
+                logger.info(f"Сублокация обновлена из диалога: {sub}")
                 return
 
-        # Движение с указанием места
+        # Движение с указанием места (извлекаем только из белого списка)
         if re.search(r'\b(поехали|едем|отправляемся|направляемся|поеду|еду|приехали|добрались|идём|пойдём|поехали\s+в|едем\s+в|отправились\s+в)\b', lowered):
-            match = re.search(r'(в\s+[а-яА-ЯёЁ]+|на\s+[а-яА-ЯёЁ]+|к\s+[а-яА-ЯёЁ]+)', lowered)
-            if match:
-                dest = match.group(0).replace('в ', '').replace('на ', '').replace('к ', '').strip()
-                await self.set_location(dest, "", source="диалог (движение)")
-            else:
-                await self.set_location("в пути", "", source="диалог (движение)")
-            return
-
-        # Движение без указания места
-        if re.search(r'\b(поеду|еду|отправляюсь|направляюсь|выхожу|ухожу|уезжаю)\b', lowered):
+            # Ищем совпадение с одной из допустимых локаций после предлога
+            for loc in self.ALLOWED_LOCATIONS:
+                if re.search(rf'(в|на|к)\s+{re.escape(loc)}', lowered):
+                    await self.set_location(loc, "", source="диалог (движение)")
+                    logger.info(f"Локация обновлена из диалога (движение): {loc}")
+                    return
+            # Если не нашли, но есть движение — устанавливаем "в пути"
             await self.set_location("в пути", "", source="диалог (движение)")
             return
 
         # Прибытие
-        if re.search(r'\b(приехала|добралась|на месте|в\s+[а-яА-ЯёЁ]+\b)', lowered):
-            match = re.search(r'(в|на)\s+([а-яА-ЯёЁa-zA-Z]+)', lowered)
-            if match:
-                new_loc = match.group(2)
-            else:
-                new_loc = "неизвестном месте"
-            await self.set_location(new_loc, "", source="диалог (прибытие)")
-            await self.add_pending_call(random.randint(120, 300), new_loc)
+        if re.search(r'\b(приехала|добралась|на месте|в\s+[а-яА-ЯёЁa-zA-Z]+\b)', lowered):
+            # Ищем совпадение с локацией после предлога "в" или "на"
+            for loc in self.ALLOWED_LOCATIONS:
+                if re.search(rf'(в|на)\s+{re.escape(loc)}', lowered):
+                    await self.set_location(loc, "", source="диалог (прибытие)")
+                    # Запланировать звонок через случайное время
+                    await self.add_pending_call(random.randint(120, 300), loc)
+                    return
+            # Если не нашли конкретную локацию, но прибыла — оставляем текущую или ставим "неизвестно"
+            # Но лучше оставить текущую, чтобы не создавать мусор
+            logger.info("Прибытие без указания конкретной локации, оставляем текущую")
             return
 
         # Прощание
         if re.search(r'\b(прощай|пока|до свидания|ухожу|выхожу|уезжаю)\b', lowered):
-            await self.set_location("в пути, вышла из поля зрения", "", source="прощание")
+            await self.set_location("в пути", "", source="прощание")
             return
+
+        # Если ничего не сработало — ничего не меняем
