@@ -16,13 +16,13 @@ from telegram.error import TimedOut, NetworkError
 from utils.tor_manager import TorManager
 from core.memory_journal import MemoryJournal
 from core.mood_engine import MoodEngine
-from core.llm_engine import LLMEngine as LocalLLMEngine
+from core.llm_engine import LLMEngine
 from generators.anime_diffusion_local import AnimeDiffusionGenerator
-from generators.anime_diffusion_colab import ColabAnimeDiffusionGenerator
 from handlers import commands, messages
-from utils.config import BOT_TOKEN, CREATOR_ID, DATA_DIR, MODELS_DIR
+from utils.config import BOT_TOKEN, CREATOR_ID, DATA_DIR
 from core.location_manager import LocationManager
 import os
+from utils.config import MODELS_DIR
 
 BASE_DIR = Path(__file__).parent
 for folder in ["logs", "data", "generated_images", "backups", "external", "models", "diary"]:
@@ -31,9 +31,9 @@ for folder in ["logs", "data", "generated_images", "backups", "external", "model
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.FileHandler(BASE_DIR/"logs"/"eva.log"), logging.StreamHandler()]
+    handlers=[logging.FileHandler(BASE_DIR/"logs"/"eva_local.log"), logging.StreamHandler()]
 )
-logger = logging.getLogger("NeuroEva")
+logger = logging.getLogger("NeuroEvaLocal")
 
 try:
     from core.vision_engine import VisionEngine
@@ -42,7 +42,7 @@ except ImportError:
     VISION_AVAILABLE = False
     logger.warning("Модуль vision_engine не найден. Зрение отключено.")
 
-class NeuroEvaBot:
+class NeuroEvaBotLocal:
     def __init__(self, model_path=None):
         self.base_dir = BASE_DIR
         self.tor_manager = TorManager(self.base_dir)
@@ -50,28 +50,18 @@ class NeuroEvaBot:
         self.location = LocationManager(DATA_DIR / "location.json")
         self.mood_engine = MoodEngine(DATA_DIR / "mood_state.json")
 
-        use_colab = os.getenv("USE_COLAB", "false").lower() == "true"
-        colab_url = os.getenv("COLAB_URL")  # теперь без дефолта
-
-        if not colab_url and use_colab:
-            logger.warning("COLAB_URL не задан в .env, генерация изображений через Colab не будет работать.")
-
-        # --- Всегда локальный LLM ---
+        # ---- Локальный LLM с переданным путём ----
         if model_path is None:
             default_model = MODELS_DIR / "qwen2.5-7b-instruct-q4_k_m.gguf"
-            self.llm_engine = LocalLLMEngine(default_model, context_size=4096, n_threads=4)
+            self.llm_engine = LLMEngine(default_model, context_size=4096, n_threads=4)
             logger.info(f"Используется локальный LLM (по умолчанию): {default_model}")
         else:
-            self.llm_engine = LocalLLMEngine(Path(model_path), context_size=4096, n_threads=4)
+            self.llm_engine = LLMEngine(Path(model_path), context_size=4096, n_threads=4)
             logger.info(f"Используется локальный LLM (из аргумента): {model_path}")
 
-        # --- Генератор изображений (Colab или локальный) ---
-        if use_colab and colab_url:
-            self.anime_gen = ColabAnimeDiffusionGenerator(self.base_dir / "models", colab_url)
-            logger.info(f"Используется Colab-генератор: {colab_url}")
-        else:
-            self.anime_gen = AnimeDiffusionGenerator(self.base_dir / "models")
-            logger.info("Используется локальный генератор (или Colab не настроен)")
+        # ---- Генератор ----
+        self.anime_gen = AnimeDiffusionGenerator(self.base_dir / "models")
+        logger.info("Используется локальный генератор NablaThetaA5")
 
         self.vision = VisionEngine() if VISION_AVAILABLE else None
         self.application = None
@@ -83,8 +73,6 @@ class NeuroEvaBot:
         self._is_sending = False
         self._welcome_sent = False
         self._tasks = []
-
-    # (остальные методы без изменений — они не содержат секретов)
 
     async def send_long_text_to_chat(self, chat_id, text, max_chars=4000, max_retries=5, timeout=600):
         now = asyncio.get_event_loop().time()
@@ -332,7 +320,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', help='Path to model GGUF file')
     args = parser.parse_args()
-    bot = NeuroEvaBot(model_path=args.model)
+    bot = NeuroEvaBotLocal(model_path=args.model)
     try:
         asyncio.run(bot.run())
     except KeyboardInterrupt:

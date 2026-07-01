@@ -17,3 +17,4 @@ python-dotenv
 schedule
 sentence-transformers
 huggingface-hub
+pygobject>=3.42.0
