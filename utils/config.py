@@ -20,9 +20,13 @@ LOGS_DIR = BASE_DIR / "logs"
 IMAGES_DIR = BASE_DIR / "generated_images"
 BACKUPS_DIR = BASE_DIR / "backups"
 
+# Путь к LoRA для Агнес (если есть)
+LORA_AGNES_PATH = MODELS_DIR / "agnes_tachion_lora.safetensors"
+
 # Настройки LLM
-LLM_MODEL_PATH = MODELS_DIR / "qwen2.5-7b-instruct-q4_k_m.gguf"
-LLM_CONTEXT_SIZE = 2048  # было 4096
+LLM_MODEL_PATH = MODELS_DIR / "qwen2.5-7b-instruct-q4_k_m.gguf"  # старый для совместимости
+LLM_MODEL_PATH_LOCAL = MODELS_DIR / "Qwen3.5-9B-Q4_K_M.gguf"      # новый для локального запуска
+LLM_CONTEXT_SIZE = 2048
 LLM_MAX_TOKENS = 150
 LLM_TEMPERATURE = 0.75
 
@@ -44,6 +48,7 @@ def get_time_context() -> str:
         return "вечер"
     else:
         return "ночь"
+
 def get_exact_time() -> str:
     """Возвращает текущее время в формате ЧЧ:ММ."""
     return datetime.now().strftime("%H:%M")
